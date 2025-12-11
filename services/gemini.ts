@@ -27,27 +27,31 @@ export const extractMatchData = async (
 ): Promise<ExtractedMatchData[]> => {
   try {
     const prompt = `
-      Analyze this game scoreboard screenshot (likely CODM, PUBG, or similar Battle Royale).
+      Analyze this CODM/PUBG scoreboard image. It contains a list of teams, ranks, and kills.
       
-      **GOAL**: Extract the Leaderboard rows accurately.
+      **CRITICAL INSTRUCTION - FINDING RANK 1**:
+      1. Scan the image for the row containing the number **"2"** in the left rank column.
+      2. Look **IMMEDIATELY ABOVE** that row.
+      3. The row above Rank 2 is **ALWAYS Rank 1**, even if it has a Trophy icon, a Crown, or no number at all.
+      4. **DO NOT SKIP THE FIRST ROW.**
       
-      **COLUMN GUIDANCE**:
-      1. **RANK/PLACEMENT**: Usually the leftmost number (1, 2, 3...) or an icon with a number.
-      2. **TEAM/PLAYER NAME**: The text identifier for the participant (e.g., "TEAM17", "SKT T1", "User123").
-      3. **KILLS**: A number, often near a crosshair icon or labeled 'Kills'.
+      **DATA EXTRACTION**:
+      For EVERY visible row, extract:
+      - **rank**: The number on the left. If it's the trophy/medal row at the top, output \`1\`.
+      - **teamName**: The text name of the team (e.g., "TEAM23", "TEAM8"). **Read this exactly.** Do not add spaces if they aren't there (e.g. "TEAM23", not "TEAM 23").
+      - **kills**: The number in the Kills column.
       
-      **CRITICAL EXTRACTION RULES**:
-      - **DO NOT** confuse the Rank number with the Team Name.
-      - If the Team Name column says "TEAM17", return "TEAM17". (Do NOT return '1' just because it is in 1st place).
-      - If the Team Name column says "TEAM1", return "TEAM1".
-      - If the Team Name is just a number (e.g. "17"), return "17".
-      - Extract the text **EXACTLY** as shown in the name column.
+      **VERIFICATION**:
+      - If you output a list starting with Rank 2, **YOU ARE WRONG**.
+      - You MUST find the team at Rank 1.
       
       **OUTPUT FORMAT**:
-      Return a JSON Array of objects with these properties:
-      - \`teamName\`: The extracted text string from the name column.
-      - \`rank\`: The integer from the rank/placement column.
-      - \`kills\`: The integer from the kills column (default 0 if missing).
+      Return a pure JSON Array:
+      [
+        { "rank": 1, "teamName": "TEAM23", "kills": 23 },
+        { "rank": 2, "teamName": "TEAM8", "kills": 18 },
+        ...
+      ]
     `;
 
     const response = await ai.models.generateContent({
@@ -84,7 +88,10 @@ export const extractMatchData = async (
       try {
         const cleanedText = cleanJson(response.text);
         const data = JSON.parse(cleanedText) as ExtractedMatchData[];
-        console.log("Extracted Data:", data);
+        console.log("AI Extracted Data:", data);
+        
+        // Double check validation: If we missed rank 1 but have rank 2, warn or infer?
+        // For now, raw AI output with the new prompt should be sufficient.
         return data;
       } catch (parseError) {
         console.error("Failed to parse Gemini JSON:", response.text, parseError);

@@ -39,8 +39,13 @@ export interface Penalty {
   reason: string;
 }
 
+export type EventType = 'scrim' | 'tournament';
+
 export interface DayData {
+  id: string;
   dayNumber: number; // 1-10
+  date?: string; // ISO Date String for Scrims/Tournaments
+  teams?: Team[]; // Optional Daily Roster Override (Crucial for Scrims)
   matches: Match[];
   penalties: Penalty[];
 }
@@ -49,10 +54,11 @@ export interface TournamentData {
   id: string;
   ownerId: string; // User ID who owns this tournament
   name: string;
-  teams: Team[];
+  type: EventType;
+  teams: Team[]; // Global roster (used as default or for Tournaments)
   scoring: ScoringSystem;
   days: DayData[];
-  currentDay: number;
+  currentDay: number; // Acts as index for selected day in UI
 }
 
 export interface NewsItem {

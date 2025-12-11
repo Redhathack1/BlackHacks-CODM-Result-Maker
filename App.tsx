@@ -9,18 +9,19 @@ import {
   LayoutGrid, ArrowLeft, Copy, Check, Calculator, FolderOpen,
   ClipboardPaste, RotateCcw, Fingerprint, Edit3, UserPlus,
   Monitor, Wifi, ArrowRight, Printer, Scan, Loader2, BookOpen,
-  FileSpreadsheet
+  FileSpreadsheet, Swords, Medal
 } from 'lucide-react';
 import { 
   TournamentData, Team, ScoringSystem, ScoringPreset,
   DayData, Match, TeamMatchResult, Penalty,
-  User, LicenseKey, LicenseDuration
+  User, LicenseKey, LicenseDuration, EventType
 } from './types';
 import { extractMatchData, ExtractedMatchData, parseScoringRules } from './services/gemini';
 
 // --- Constants & Defaults ---
 
-const APP_VERSION = "5.6.8 (Image Deletion)"; 
+const APP_VERSION = "5.7.3 (Export Restored & Vision V3)"; 
+const DATA_VERSION = "v5.7.3_EXPORT"; // Changing this wipes local storage for users
 
 const ADMIN_CREDENTIALS = {
   username: 'admin',
@@ -254,7 +255,7 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
         if (existingKey) {
             if (existingKey.isRevoked) return setError("License Key Revoked");
             // STRICT ONE-USER CHECK: If key is used, block it immediately if it's someone else
-            if (existingKey.isUsed) return setError(`License Key is already in use by ${existingKey.usedByUsername || 'another user'}`);
+            if (existingKey.isUsed && existingKey.usedByUsername !== uniqueId) return setError(`This license is permanently assigned to another device/user (${existingKey.usedByUsername}). Access Denied.`);
             duration = existingKey.durationLabel;
         } else {
             // 2. Not in DB, check if it's a valid generated Smart Key
@@ -318,7 +319,7 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
              
              // STRICT: If key exists in DB and is used by someone else, DO NOT allow recovery
              if (existingKey && existingKey.isUsed && existingKey.usedByUsername !== uniqueId) {
-                  return setError("This license key belongs to another user.");
+                  return setError("License key is already assigned to a device. Please use the original device.");
              }
 
              if (smartCheck.valid && smartCheck.duration) {
@@ -370,7 +371,7 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
 
             // STRICT: If key exists and is used by another, BLOCK
             if (potentialNewKey && potentialNewKey.isUsed && potentialNewKey.usedByUsername !== user.username) {
-                return setError(`License Key is already in use by ${potentialNewKey.usedByUsername}`);
+                return setError(`License Key is already assigned to a device (${potentialNewKey.usedByUsername}). Please use the original device.`);
             }
 
             if (!potentialNewKey) {
@@ -527,7 +528,7 @@ const LicenseGate: React.FC<{ user: User; onValidated: (user: User) => void; onL
         if (matchedKey.isRevoked) return setError("KEY REVOKED");
         // STRICT: Block if used by another
         if (matchedKey.isUsed && matchedKey.usedByUsername !== user.username) {
-            return setError(`KEY ALREADY IN USE BY ${matchedKey.usedByUsername}`);
+            return setError(`License Key is already assigned to a device (${matchedKey.usedByUsername}). Please use the original device.`);
         }
         duration = matchedKey.durationLabel;
     } else {
@@ -802,9 +803,12 @@ const AdminPanel: React.FC<{ onLogout: () => void; onEnterApp: () => void }> = (
 // 4. Setup Wizard
 const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCancel: () => void, user: User }> = ({ onComplete, onCancel, user }) => {
   const [step, setStep] = useState(1);
+  const [eventType, setEventType] = useState<EventType>('scrim');
   const [name, setName] = useState('');
   const [teamsInput, setTeamsInput] = useState('');
   const [scoring, setScoring] = useState<ScoringSystem>(DEFAULT_SCORING);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [aiRuleInput, setAiRuleInput] = useState('');
   const [isParsing, setIsParsing] = useState(false);
 
@@ -819,63 +823,137 @@ const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCanc
   };
 
   const handleFinish = () => {
-    // Aggressively strip numbering because the user requested "it shouldn't write numbers with it"
-    // e.g., "1. Legionaries" -> "Legionaries"
     const rawTeams = teamsInput.split('\n').map(t => cleanTeamName(t)).filter(t => t.length > 0);
     const teams: Team[] = rawTeams.map(name => ({ id: Math.random().toString(36).substr(2, 9), name }));
     
-    // Create 10 empty days
-    const days: DayData[] = Array.from({ length: 10 }, (_, i) => ({
-        dayNumber: i + 1,
-        matches: [],
-        penalties: []
-    }));
+    let days: DayData[] = [];
 
-    const newTournament: TournamentData = {
+    if (eventType === 'scrim') {
+        // Scrims start with no days, they are added via calendar
+        days = [];
+    } else {
+        // Tournament: Generate days based on date range
+        if (startDate && endDate) {
+            let start = new Date(startDate);
+            const end = new Date(endDate);
+            let dayCount = 1;
+            while (start <= end) {
+                days.push({
+                    id: Math.random().toString(),
+                    dayNumber: dayCount,
+                    date: start.toISOString().split('T')[0],
+                    matches: [],
+                    penalties: []
+                });
+                start.setDate(start.getDate() + 1);
+                dayCount++;
+            }
+        } else {
+            // Fallback: 3 days default
+            days = Array.from({ length: 3 }, (_, i) => ({
+                id: Math.random().toString(),
+                dayNumber: i + 1,
+                matches: [],
+                penalties: []
+            }));
+        }
+    }
+
+    const newEvent: TournamentData = {
         id: Math.random().toString(36).substr(2, 9),
         ownerId: user.id,
-        name: name || 'Untitled Tournament',
+        name: name || 'Untitled Event',
+        type: eventType,
         teams,
         scoring,
         days,
         currentDay: 1
     };
     
-    onComplete(newTournament);
+    onComplete(newEvent);
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-[#030712] flex items-center justify-center p-4">
         <div className="max-w-3xl w-full bg-slate-900 border border-slate-700 rounded-xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
             <div className="p-6 bg-slate-950 border-b border-slate-800 flex justify-between items-center">
-                <h2 className="font-tech text-2xl text-white">TOURNAMENT SETUP // STEP {step}/3</h2>
+                <h2 className="font-tech text-2xl text-white">EVENT SETUP // STEP {step}/3</h2>
                 <button onClick={onCancel} className="text-slate-500 hover:text-white"><X className="w-6 h-6"/></button>
             </div>
 
             <div className="p-8 flex-1 overflow-y-auto">
                 {step === 1 && (
-                    <div className="space-y-6">
+                    <div className="space-y-8">
                         <div>
-                            <label className="block text-slate-400 text-xs uppercase mb-2">Tournament Name</label>
+                            <label className="block text-slate-400 text-xs uppercase mb-4">Select Event Type</label>
+                            <div className="grid grid-cols-2 gap-4">
+                                <button 
+                                    onClick={() => setEventType('scrim')}
+                                    className={`p-6 rounded-lg border-2 flex flex-col items-center gap-3 transition-all ${eventType === 'scrim' ? 'border-cyan-500 bg-cyan-900/20' : 'border-slate-700 bg-slate-900/50 hover:border-slate-600'}`}
+                                >
+                                    <Swords className={`w-8 h-8 ${eventType === 'scrim' ? 'text-cyan-400' : 'text-slate-500'}`}/>
+                                    <span className={`font-bold font-tech text-lg ${eventType === 'scrim' ? 'text-white' : 'text-slate-400'}`}>DAILY SCRIMS</span>
+                                    <span className="text-xs text-center text-slate-500">Flexible dates, daily rosters, ongoing results storage.</span>
+                                </button>
+                                <button 
+                                    onClick={() => setEventType('tournament')}
+                                    className={`p-6 rounded-lg border-2 flex flex-col items-center gap-3 transition-all ${eventType === 'tournament' ? 'border-cyan-500 bg-cyan-900/20' : 'border-slate-700 bg-slate-900/50 hover:border-slate-600'}`}
+                                >
+                                    <Medal className={`w-8 h-8 ${eventType === 'tournament' ? 'text-cyan-400' : 'text-slate-500'}`}/>
+                                    <span className={`font-bold font-tech text-lg ${eventType === 'tournament' ? 'text-white' : 'text-slate-400'}`}>TOURNAMENT</span>
+                                    <span className="text-xs text-center text-slate-500">Fixed dates, consistent roster, cumulative scoring.</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-slate-400 text-xs uppercase mb-2">Event Name</label>
                             <input 
                                 value={name} onChange={e => setName(e.target.value)}
                                 className="w-full bg-slate-950 border border-slate-700 rounded p-4 text-white focus:border-cyan-500 outline-none font-tech text-xl"
-                                placeholder="e.g. SUMMER CHAMPIONSHIP 2025"
+                                placeholder={eventType === 'scrim' ? "e.g. DAILY T1 SCRIMS" : "e.g. SUMMER CHAMPIONSHIP 2025"}
                             />
                         </div>
+
+                        {eventType === 'tournament' && (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-slate-400 text-xs uppercase mb-2">Start Date</label>
+                                    <input 
+                                        type="date"
+                                        value={startDate} onChange={e => setStartDate(e.target.value)}
+                                        className="w-full bg-slate-950 border border-slate-700 rounded p-4 text-white focus:border-cyan-500 outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-slate-400 text-xs uppercase mb-2">End Date</label>
+                                    <input 
+                                        type="date"
+                                        value={endDate} onChange={e => setEndDate(e.target.value)}
+                                        className="w-full bg-slate-950 border border-slate-700 rounded p-4 text-white focus:border-cyan-500 outline-none"
+                                    />
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
                 
                 {step === 2 && (
                     <div className="space-y-6">
                         <div>
-                            <label className="block text-slate-400 text-xs uppercase mb-2">Team Roster (One per line)</label>
+                            <label className="block text-slate-400 text-xs uppercase mb-2">
+                                {eventType === 'scrim' ? "Default Team Template (Optional)" : "Team Roster (One per line)"}
+                            </label>
                             <textarea 
                                 value={teamsInput} onChange={e => setTeamsInput(e.target.value)}
                                 className="w-full h-64 bg-slate-950 border border-slate-700 rounded p-4 text-white focus:border-cyan-500 outline-none font-mono text-sm"
                                 placeholder="Paste team list here (e.g. 1. Legionaries)"
                             />
-                            <p className="text-slate-500 text-xs mt-2">Format: Paste your list. Numbering (e.g. '1. ') will be auto-removed, preserving order.</p>
+                            <p className="text-slate-500 text-xs mt-2">
+                                {eventType === 'scrim' 
+                                    ? "You can set specific slots for each day later in the dashboard." 
+                                    : "Format: Paste your list. Numbering (e.g. '1. ') will be auto-removed, preserving order."}
+                            </p>
                         </div>
                     </div>
                 )}
@@ -949,7 +1027,7 @@ const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCanc
                 {step < 3 ? (
                     <TechButton onClick={() => setStep(step + 1)}>NEXT STEP <ChevronRight className="w-4 h-4"/></TechButton>
                 ) : (
-                    <TechButton onClick={handleFinish} variant="primary">INITIALIZE TOURNAMENT</TechButton>
+                    <TechButton onClick={handleFinish} variant="primary">INITIALIZE EVENT</TechButton>
                 )}
             </div>
         </div>
@@ -957,10 +1035,11 @@ const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCanc
   );
 };
 
-// 5. Dashboard (Restoring the cut-off logic)
+// 5. Dashboard
 const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: TournamentData) => void, onBack: () => void }> = ({ tournament, onUpdate, onBack }) => {
   const [tab, setTab] = useState<'overview' | 'matches' | 'intel' | 'manage'>('overview');
-  const [selectedDay, setSelectedDay] = useState(tournament.currentDay);
+  // For Scrims, currentDay maps to selected date string if we want, or we just rely on ID
+  const [selectedDayId, setSelectedDayId] = useState<string>(tournament.days[0]?.id || '');
   const [showSanctionModal, setShowSanctionModal] = useState(false);
   const [sanctionForm, setSanctionForm] = useState({
       teamId: '',
@@ -969,23 +1048,28 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
       reason: ''
   });
   const [analyzingMatchId, setAnalyzingMatchId] = useState<string | null>(null);
+  const [newScrimDate, setNewScrimDate] = useState('');
 
   // Manage Tab States
   const [manageTeamInput, setManageTeamInput] = useState('');
   const [manageAiRule, setManageAiRule] = useState('');
   
+  const currentDayData = useMemo(() => tournament.days.find(d => d.id === selectedDayId), [tournament, selectedDayId]);
+  
+  // Use daily team roster if available, otherwise global
+  const activeTeams = currentDayData?.teams || tournament.teams;
+
   // Intelligence Logic
   const dailyStandings = useMemo(() => {
-    const day = tournament.days.find(d => d.dayNumber === selectedDay);
-    if (!day) return [];
+    if (!currentDayData) return [];
 
-    const scores = tournament.teams.map(team => {
+    const scores = activeTeams.map(team => {
         let kills = 0;
         let placePts = 0;
         let killPts = 0;
         let penaltyPts = 0;
 
-        day.matches.forEach(m => {
+        currentDayData.matches.forEach(m => {
             const res = m.results.find(r => r.teamId === team.id);
             if (res) {
                 kills += res.kills;
@@ -995,7 +1079,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
         });
 
         // Penalties
-        day.penalties.filter(p => p.teamId === team.id).forEach(p => {
+        currentDayData.penalties.filter(p => p.teamId === team.id).forEach(p => {
              penaltyPts += p.points;
         });
 
@@ -1010,17 +1094,47 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
     });
 
     return scores.sort((a, b) => b.total - a.total);
-  }, [tournament, selectedDay]);
+  }, [tournament, selectedDayId, activeTeams]);
+
+  const handleAddScrimDay = () => {
+      if(!newScrimDate) return alert("Please select a date");
+      const exists = tournament.days.find(d => d.date === newScrimDate);
+      if(exists) return alert("Date already exists!");
+
+      const newDays = [...tournament.days];
+      newDays.push({
+          id: Math.random().toString(),
+          dayNumber: newDays.length + 1,
+          date: newScrimDate,
+          matches: [],
+          penalties: [],
+          teams: tournament.teams.length > 0 ? tournament.teams : undefined // Default to global template if exists
+      });
+      // Sort days by date
+      newDays.sort((a,b) => (a.date || '').localeCompare(b.date || ''));
+      onUpdate({...tournament, days: newDays});
+      setNewScrimDate('');
+  };
 
   const handleUpdateTeams = () => {
       const raw = manageTeamInput.split('\n').map(t => cleanTeamName(t)).filter(t => t.length > 0);
       const newTeams: Team[] = raw.map(name => {
-          // Keep ID if name matches existing
-          const existing = tournament.teams.find(t => t.name === name);
+          const existing = activeTeams.find(t => t.name === name);
           return existing ? existing : { id: Math.random().toString(36).substr(2, 9), name };
       });
-      onUpdate({ ...tournament, teams: newTeams });
-      alert("Teams Updated!");
+
+      if (tournament.type === 'scrim' && currentDayData) {
+          // Update ONLY this day's roster
+          const newDays = tournament.days.map(d => 
+              d.id === currentDayData.id ? { ...d, teams: newTeams } : d
+          );
+          onUpdate({ ...tournament, days: newDays });
+          alert(`Roster updated for ${currentDayData.date}`);
+      } else {
+          // Update Global
+          onUpdate({ ...tournament, teams: newTeams });
+          alert("Global Roster Updated!");
+      }
   };
 
   const handleUpdateScoring = async () => {
@@ -1033,7 +1147,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
 
   const handleAddPenalty = (teamId: string, points: number, reason: string) => {
      const newDays = [...tournament.days];
-     const dayIdx = newDays.findIndex(d => d.dayNumber === selectedDay);
+     const dayIdx = newDays.findIndex(d => d.id === selectedDayId);
      if(dayIdx >= 0) {
          newDays[dayIdx].penalties.push({
              id: Math.random().toString(),
@@ -1047,7 +1161,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
   
   const handleRemovePenalty = (penaltyId: string) => {
      const newDays = [...tournament.days];
-     const dayIdx = newDays.findIndex(d => d.dayNumber === selectedDay);
+     const dayIdx = newDays.findIndex(d => d.id === selectedDayId);
      if(dayIdx >= 0) {
          newDays[dayIdx].penalties = newDays[dayIdx].penalties.filter(p => p.id !== penaltyId);
          onUpdate({...tournament, days: newDays});
@@ -1057,13 +1171,12 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
   const handleResetMatch = (matchId: string) => {
     if(!confirm("Reset this lobby? All data will be lost.")) return;
     const newDays = [...tournament.days];
-    const dayIdx = newDays.findIndex(d => d.dayNumber === selectedDay);
+    const dayIdx = newDays.findIndex(d => d.id === selectedDayId);
     if(dayIdx >= 0) {
         const mIdx = newDays[dayIdx].matches.findIndex(m => m.id === matchId);
         if(mIdx >= 0) {
             newDays[dayIdx].matches[mIdx].results = [];
             newDays[dayIdx].matches[mIdx].isCompleted = false;
-            // newDays[dayIdx].matches[mIdx].screenshots = []; // Keep screenshots, just reset results
             onUpdate({...tournament, days: newDays});
         }
     }
@@ -1072,7 +1185,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
   const handleAnalyzeMatch = async (matchId: string) => {
       setAnalyzingMatchId(matchId);
       const newDays = [...tournament.days];
-      const dIdx = newDays.findIndex(d => d.dayNumber === selectedDay);
+      const dIdx = newDays.findIndex(d => d.id === selectedDayId);
       if(dIdx < 0) return;
       const mIdx = newDays[dIdx].matches.findIndex(m => m.id === matchId);
       if(mIdx < 0) return;
@@ -1080,52 +1193,41 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
       const match = newDays[dIdx].matches[mIdx];
       
       try {
-          // Process all screenshots in parallel
           const allExtractedData = await Promise.all(
               match.screenshots.map(base64 => {
                   const mimeType = base64.match(/:(.*?);/)?.[1] || 'image/png';
                   const data = base64.split(',')[1];
-                  return extractMatchData(data, mimeType, tournament.teams.map(t => t.name));
+                  return extractMatchData(data, mimeType, activeTeams.map(t => t.name));
               })
           );
 
-          // Flatten results
           const flatExtracted = allExtractedData.flat();
 
           if (flatExtracted.length === 0) {
-              alert("AI Analysis complete but NO data was found. Please ensure screenshots are clear and contain readable text.");
+              alert("AI Analysis complete but NO data was found. Please ensure screenshots are clear.");
               setAnalyzingMatchId(null);
               return;
           }
 
-          // Map and Dedup results
           const resultsMap = new Map<string, TeamMatchResult>();
 
           flatExtracted.forEach(ex => {
-               const rawName = ex.teamName; // e.g. "TEAM1"
-               
-               // Attempt to extract a slot number (e.g. "TEAM1" -> 1, "1" -> 1, "Slot 1" -> 1)
+               const rawName = ex.teamName;
                const exNumMatch = rawName.match(/(\d+)/);
                const exNum = exNumMatch ? parseInt(exNumMatch[0], 10) : null;
 
                let team = null;
-
-               // IMPORTANT: Prioritize strict index matching if the extracted name looks like a generic identifier
-               // e.g. "TEAM1", "Slot 1", "#1", "1" -> map to tournament.teams[0] (Slot 1)
                const isGenericIdentifier = /^(team|slot|#|no\.?)?\s*\d+$/i.test(rawName) || /^\d+$/.test(rawName);
                
-               if (isGenericIdentifier && exNum !== null && exNum > 0 && exNum <= tournament.teams.length) {
-                    team = tournament.teams[exNum - 1];
+               if (isGenericIdentifier && exNum !== null && exNum > 0 && exNum <= activeTeams.length) {
+                    team = activeTeams[exNum - 1];
                } 
                
-               // Fallback: Fuzzy Name Matching
                if (!team) {
-                   team = tournament.teams.find(t => {
+                   team = activeTeams.find(t => {
                         const nTeam = normalizeStr(t.name);
                         const nEx = normalizeStr(rawName);
-                        // Standard check
                         if (nTeam === nEx || nTeam.includes(nEx) || nEx.includes(nTeam)) return true;
-                        
                         return false;
                    });
                }
@@ -1157,7 +1259,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
           });
           
           if (resultsMap.size === 0) {
-              alert("AI found data but could NOT match any teams to your roster.\n\nTip: If your screenshots use generic slot names like 'TEAM1', ensure your Roster order matches (Line 1 = Team 1).");
+              alert("AI found data but could NOT match any teams to your roster. Check your team names/slots.");
               setAnalyzingMatchId(null);
               return;
           }
@@ -1175,7 +1277,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
 
   const openSanctionModal = (teamId?: string) => {
       setSanctionForm({
-          teamId: teamId || (tournament.teams[0]?.id || ''),
+          teamId: teamId || (activeTeams[0]?.id || ''),
           type: 'deduction',
           points: 10,
           reason: ''
@@ -1201,92 +1303,107 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
           total: s.total
       }));
 
-      // Sanitize tournament name for filename
       const sanitizedName = tournament.name.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_');
-      const fileName = `${sanitizedName}_Day${selectedDay}_Report`;
+      const dayLabel = currentDayData?.date || `Day${currentDayData?.dayNumber}`;
+      const fileName = `${sanitizedName}_${dayLabel}_Report`;
 
       if (format === 'csv') {
           const headers = ['Rank', 'Team', 'Kills', 'Place Pts', 'Kill Pts', 'Sanctions', 'Total'];
           const rows = data.map(d => [`#${d.rank}`, d.team, d.kills, d.placePts, d.killPts, d.sanctions, d.total]);
           downloadCSV(`${fileName}.csv`, headers, rows);
-      } 
-      else if (format === 'xls') {
-          let html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Tournament Report</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]--></head><body>';
-          html += '<table border="1"><thead><tr><th style="background-color:#ccc;">Rank</th><th style="background-color:#ccc;">Team</th><th style="background-color:#ccc;">Kills</th><th style="background-color:#ccc;">Place Pts</th><th style="background-color:#ccc;">Kill Pts</th><th style="background-color:#ccc;">Sanctions</th><th style="background-color:#ccc;">Total</th></tr></thead><tbody>';
-          data.forEach(d => {
-              html += `<tr><td>#${d.rank}</td><td>${d.team}</td><td>${d.kills}</td><td>${d.placePts}</td><td>${d.killPts}</td><td style="color:${d.sanctions < 0 ? 'red' : 'black'}">${d.sanctions}</td><td><b>${d.total}</b></td></tr>`;
-          });
-          html += '</tbody></table></body></html>';
-          const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+      } else if (format === 'xls') {
+          // Construct HTML Table for XLS compatibility
+          const tableContent = `
+            <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+            <head>
+                <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Report</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+                <style>
+                    body { font-family: Arial, sans-serif; }
+                    table { border-collapse: collapse; width: 100%; }
+                    th, td { border: 1px solid #000; padding: 5px; text-align: center; }
+                    th { background-color: #4CAF50; color: white; }
+                    tr:nth-child(even) { background-color: #f2f2f2; }
+                </style>
+            </head>
+            <body>
+                <h2>${tournament.name} - ${dayLabel}</h2>
+                <table>
+                    <thead>
+                        <tr><th>Rank</th><th>Team</th><th>Kills</th><th>Place Pts</th><th>Kill Pts</th><th>Sanctions</th><th>Total</th></tr>
+                    </thead>
+                    <tbody>
+                        ${data.map(d => `
+                            <tr>
+                                <td>${d.rank}</td>
+                                <td>${d.team}</td>
+                                <td>${d.kills}</td>
+                                <td>${d.placePts}</td>
+                                <td>${d.killPts}</td>
+                                <td>${d.sanctions}</td>
+                                <td><strong>${d.total}</strong></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </body>
+            </html>
+          `;
+          const blob = new Blob([tableContent], { type: 'application/vnd.ms-excel' });
           const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${fileName}.xls`;
-          a.click();
-      }
-      else if (format === 'pdf') {
-           const printContent = `
-              <html>
-              <head>
-                  <title>${fileName}</title>
-                  <style>
-                      body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 40px; }
-                      h1 { color: #333; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 5px; }
-                      .meta { color: #666; margin-bottom: 30px; font-size: 0.9em; }
-                      table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
-                      th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
-                      th { background-color: #f2f2f2; font-weight: bold; text-transform: uppercase; font-size: 12px; }
-                      tr:nth-child(even) { background-color: #f9f9f9; }
-                      .rank { font-weight: bold; width: 60px; text-align: center; }
-                      .total { font-weight: bold; font-size: 1.1em; }
-                      .negative { color: #dc2626; font-weight: bold; }
-                      .positive { color: #16a34a; font-weight: bold; }
-                      .footer { margin-top: 40px; font-size: 10px; color: #999; text-align: center; border-top: 1px solid #eee; padding-top: 20px; }
-                  </style>
-              </head>
-              <body>
-                  <h1>${tournament.name}</h1>
-                  <div class="meta">
-                      Day ${selectedDay} Intelligence Report • Generated: ${new Date().toLocaleString()}
-                  </div>
-                  <table>
-                      <thead>
-                          <tr>
-                              <th class="rank">#</th>
-                              <th>Team Name</th>
-                              <th>Kills</th>
-                              <th>Placement Pts</th>
-                              <th>Kill Pts</th>
-                              <th>Adjustments</th>
-                              <th>Total Score</th>
-                          </tr>
-                      </thead>
-                      <tbody>
-                          ${data.map(d => `
-                              <tr>
-                                  <td class="rank">${d.rank}</td>
-                                  <td>${d.team}</td>
-                                  <td>${d.kills}</td>
-                                  <td>${d.placePts}</td>
-                                  <td>${d.killPts}</td>
-                                  <td class="${d.sanctions < 0 ? 'negative' : d.sanctions > 0 ? 'positive' : ''}">${d.sanctions > 0 ? '+' : ''}${d.sanctions}</td>
-                                  <td class="total">${d.total}</td>
-                              </tr>
-                          `).join('')}
-                      </tbody>
-                  </table>
-                  <div class="footer">
-                      System Generated Report by BlackHacks Elite Manager • blackhacks.tech
-                  </div>
-                  <script>window.onload = function() { window.print(); }</script>
-              </body>
-              </html>
-           `;
-           const printWindow = window.open('', '_blank');
-           if (printWindow) {
-               printWindow.document.write(printContent);
-               printWindow.document.close();
-           }
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${fileName}.xls`;
+          link.click();
+          URL.revokeObjectURL(url);
+      } else if (format === 'pdf') {
+          // Use Browser Print for PDF
+          const printWindow = window.open('', '', 'height=600,width=800');
+          if (printWindow) {
+              printWindow.document.write('<html><head><title>Report</title>');
+              printWindow.document.write(`
+                <style>
+                    body { font-family: 'Helvetica', sans-serif; padding: 20px; }
+                    h1 { text-align: center; color: #333; margin-bottom: 20px; }
+                    .meta { text-align: center; color: #666; margin-bottom: 30px; }
+                    table { width: 100%; border-collapse: collapse; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+                    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #ddd; }
+                    th { background-color: #009879; color: #ffffff; text-transform: uppercase; font-size: 12px; letter-spacing: 1px; }
+                    tr:nth-of-type(even) { background-color: #f3f3f3; }
+                    tr:last-of-type { border-bottom: 2px solid #009879; }
+                    .total-cell { font-weight: bold; color: #009879; }
+                </style>
+              `);
+              printWindow.document.write('</head><body>');
+              printWindow.document.write(`<h1>${tournament.name}</h1>`);
+              printWindow.document.write(`<div class="meta">${dayLabel} Report | Generated by BlackHacks</div>`);
+              printWindow.document.write(`
+                <table>
+                    <thead>
+                        <tr><th>#</th><th>TEAM</th><th>KILLS</th><th>PLACE PTS</th><th>KILL PTS</th><th>SANCTIONS</th><th>TOTAL</th></tr>
+                    </thead>
+                    <tbody>
+                        ${data.map(d => `
+                            <tr>
+                                <td>${d.rank}</td>
+                                <td>${d.team}</td>
+                                <td>${d.kills}</td>
+                                <td>${d.placePts}</td>
+                                <td>${d.killPts}</td>
+                                <td>${d.sanctions}</td>
+                                <td class="total-cell">${d.total}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+              `);
+              printWindow.document.write('</body></html>');
+              printWindow.document.close();
+              printWindow.focus();
+              setTimeout(() => {
+                  printWindow.print();
+                  printWindow.close();
+              }, 500);
+          }
       }
   };
 
@@ -1296,10 +1413,15 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
             <div className="flex items-center gap-4">
                 <button onClick={onBack} className="p-2 hover:bg-slate-800 rounded"><ArrowLeft/></button>
                 <div>
-                    <h1 className="font-tech text-2xl uppercase font-bold">{tournament.name}</h1>
+                    <h1 className="font-tech text-2xl uppercase font-bold flex items-center gap-2">
+                        {tournament.name}
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 uppercase">
+                            {tournament.type === 'scrim' ? 'Daily Scrims' : 'Ranked Tournament'}
+                        </span>
+                    </h1>
                     <div className="flex gap-4 text-xs text-slate-500 font-mono mt-1">
-                        <span>DAY {selectedDay}</span>
-                        <span>{tournament.teams.length} TEAMS</span>
+                        <span>{currentDayData?.date ? currentDayData.date : `DAY ${currentDayData?.dayNumber || 1}`}</span>
+                        <span>{activeTeams.length} TEAMS</span>
                     </div>
                 </div>
             </div>
@@ -1321,34 +1443,58 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     <div className="lg:col-span-2 space-y-6">
                         <TechCard title="LEADERBOARD" icon={<Trophy className="w-5 h-5"/>} className="min-h-[400px]">
-                            <div className="space-y-2">
-                                {dailyStandings.slice(0, 5).map((stat, i) => (
-                                    <div key={i} className="flex items-center justify-between p-4 bg-slate-900/50 border border-slate-800 rounded-lg">
-                                        <div className="flex items-center gap-4">
-                                            <span className={`text-xl font-bold font-mono ${i===0?'text-yellow-400':i===1?'text-slate-300':i===2?'text-amber-600':'text-slate-600'}`}>#{i+1}</span>
-                                            <span className="font-bold">{stat.team.name}</span>
+                            {dailyStandings.length > 0 ? (
+                                <div className="space-y-2">
+                                    {dailyStandings.slice(0, 5).map((stat, i) => (
+                                        <div key={i} className="flex items-center justify-between p-4 bg-slate-900/50 border border-slate-800 rounded-lg">
+                                            <div className="flex items-center gap-4">
+                                                <span className={`text-xl font-bold font-mono ${i===0?'text-yellow-400':i===1?'text-slate-300':i===2?'text-amber-600':'text-slate-600'}`}>#{i+1}</span>
+                                                <span className="font-bold">{stat.team.name}</span>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="text-2xl font-bold font-mono text-cyan-400">{stat.total}</div>
+                                                <div className="text-xs text-slate-500">{stat.kills} KILLS</div>
+                                            </div>
                                         </div>
-                                        <div className="text-right">
-                                            <div className="text-2xl font-bold font-mono text-cyan-400">{stat.total}</div>
-                                            <div className="text-xs text-slate-500">{stat.kills} KILLS</div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="text-center text-slate-500 py-12">No data for selected day.</div>
+                            )}
                         </TechCard>
                     </div>
                     <div className="space-y-6">
-                         <TechCard title="DAY SELECTOR" icon={<Calendar className="w-5 h-5"/>}>
-                             <div className="grid grid-cols-5 gap-2">
-                                 {tournament.days.map(d => (
-                                     <button 
-                                        key={d.dayNumber}
-                                        onClick={() => setSelectedDay(d.dayNumber)}
-                                        className={`p-2 rounded text-xs font-bold border ${selectedDay === d.dayNumber ? 'bg-cyan-500/20 border-cyan-500 text-white' : 'border-slate-700 text-slate-500 hover:border-slate-500'}`}
-                                     >
-                                         DAY {d.dayNumber}
-                                     </button>
-                                 ))}
+                         <TechCard title={tournament.type === 'scrim' ? "SCRIM CALENDAR" : "DAY SELECTOR"} icon={<Calendar className="w-5 h-5"/>}>
+                             <div className="space-y-4">
+                                 {tournament.type === 'scrim' && (
+                                     <div className="flex gap-2">
+                                         <input 
+                                            type="date" 
+                                            className="flex-1 bg-slate-950 border border-slate-700 rounded p-2 text-xs text-white"
+                                            value={newScrimDate}
+                                            onChange={e => setNewScrimDate(e.target.value)}
+                                         />
+                                         <button onClick={handleAddScrimDay} className="p-2 bg-cyan-600 text-white rounded text-xs font-bold hover:bg-cyan-500">ADD DAY</button>
+                                     </div>
+                                 )}
+                                 
+                                 <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto custom-scrollbar">
+                                     {tournament.days.map(d => (
+                                         <button 
+                                            key={d.id}
+                                            onClick={() => setSelectedDayId(d.id)}
+                                            className={`p-3 rounded text-xs font-bold border flex flex-col items-center justify-center transition-all ${selectedDayId === d.id ? 'bg-cyan-900/40 border-cyan-500 text-white shadow-[0_0_10px_rgba(6,182,212,0.2)]' : 'bg-slate-900/50 border-slate-700 text-slate-500 hover:border-slate-500'}`}
+                                         >
+                                             {d.date ? (
+                                                 <>
+                                                    <span className="text-[10px] text-slate-400 uppercase">{new Date(d.date).toLocaleDateString(undefined, { weekday: 'short' })}</span>
+                                                    <span className="text-lg">{new Date(d.date).getDate()}</span>
+                                                    <span className="text-[10px] uppercase">{new Date(d.date).toLocaleDateString(undefined, { month: 'short' })}</span>
+                                                 </>
+                                             ) : `DAY ${d.dayNumber}`}
+                                         </button>
+                                     ))}
+                                 </div>
                              </div>
                          </TechCard>
                     </div>
@@ -1357,7 +1503,17 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
 
             {tab === 'matches' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {tournament.days.find(d => d.dayNumber === selectedDay)?.matches.map((match) => (
+                    {/* Check if roster is empty for this day (Scrims) */}
+                    {activeTeams.length === 0 && (
+                        <div className="col-span-full bg-yellow-900/20 border border-yellow-500/50 p-6 rounded-lg text-center">
+                            <AlertTriangle className="w-12 h-12 text-yellow-500 mx-auto mb-4"/>
+                            <h3 className="text-xl font-bold text-white mb-2">NO ROSTER SET FOR {currentDayData?.date || 'THIS DAY'}</h3>
+                            <p className="text-slate-400 mb-6">Please go to the "Manage" tab to set the slots for this scrim day before adding results.</p>
+                            <button onClick={() => setTab('manage')} className="bg-yellow-600 text-black font-bold px-6 py-3 rounded hover:bg-yellow-500">GO TO MANAGE</button>
+                        </div>
+                    )}
+
+                    {activeTeams.length > 0 && currentDayData?.matches.map((match) => (
                         <TechCard key={match.id} title={`LOBBY ${match.matchNumber}`} icon={<Crosshair className="w-5 h-5"/>}>
                             {match.isCompleted ? (
                                 <div className="text-center py-4">
@@ -1367,7 +1523,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                     <div className="bg-slate-950 p-2 rounded mb-4 text-left border border-slate-800">
                                         <div className="text-[10px] text-slate-500 uppercase font-bold mb-2">Results Preview</div>
                                         {match.results.sort((a,b) => a.place - b.place).slice(0, 3).map((r, idx) => {
-                                            const tName = tournament.teams.find(t=>t.id===r.teamId)?.name || 'Unknown';
+                                            const tName = activeTeams.find(t=>t.id===r.teamId)?.name || 'Unknown';
                                             return (
                                                 <div key={idx} className="flex justify-between text-xs text-slate-300 mb-1">
                                                     <span>#{r.place} {tName}</span>
@@ -1375,7 +1531,6 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                                 </div>
                                             );
                                         })}
-                                        {match.results.length > 3 && <div className="text-[10px] text-slate-600 text-center mt-1">+{match.results.length - 3} more teams</div>}
                                     </div>
 
                                     <div className="flex gap-2 justify-center mb-4">
@@ -1397,7 +1552,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 const newDays = [...tournament.days];
-                                                                const dIdx = newDays.findIndex(d => d.dayNumber === selectedDay);
+                                                                const dIdx = newDays.findIndex(d => d.id === selectedDayId);
                                                                 if (dIdx === -1) return;
                                                                 const mIdx = newDays[dIdx].matches.findIndex(m => m.id === match.id);
                                                                 if (mIdx === -1) return;
@@ -1426,7 +1581,6 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                     )}
 
                                     <div className="space-y-3">
-                                        {/* Hidden File Input */}
                                         <input
                                             type="file"
                                             multiple
@@ -1438,16 +1592,12 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                                 if (files.length > 0) {
                                                     const base64s = await Promise.all(files.map(readFileAsBase64));
                                                     const newDays = [...tournament.days];
-                                                    const dIdx = newDays.findIndex(d => d.dayNumber === selectedDay);
+                                                    const dIdx = newDays.findIndex(d => d.id === selectedDayId);
                                                     const mIdx = newDays[dIdx].matches.findIndex(m => m.id === match.id);
-                                                    
-                                                    // Append new screenshots to existing ones
                                                     const currentScreenshots = newDays[dIdx].matches[mIdx].screenshots || [];
                                                     newDays[dIdx].matches[mIdx].screenshots = [...currentScreenshots, ...base64s];
-                                                    
                                                     onUpdate({ ...tournament, days: newDays });
                                                 }
-                                                // Reset input so same files can be selected again if needed
                                                 e.target.value = '';
                                             }}
                                         />
@@ -1478,27 +1628,31 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                             )}
                         </TechCard>
                     ))}
-                    <button 
-                        onClick={() => {
-                            const newDays = [...tournament.days];
-                            const dIdx = newDays.findIndex(d => d.dayNumber === selectedDay);
-                            newDays[dIdx].matches.push({
-                                id: Math.random().toString(),
-                                matchNumber: newDays[dIdx].matches.length + 1,
-                                results: [],
-                                screenshots: [],
-                                isCompleted: false
-                            });
-                            onUpdate({ ...tournament, days: newDays });
-                        }}
-                        className="border-2 border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center text-slate-600 hover:border-cyan-500 hover:text-cyan-500 transition-colors h-[320px]"
-                    >
-                        <Plus className="w-8 h-8 mb-2"/>
-                        <span className="font-tech font-bold">ADD LOBBY</span>
-                    </button>
+                    
+                    {activeTeams.length > 0 && (
+                        <button 
+                            onClick={() => {
+                                const newDays = [...tournament.days];
+                                const dIdx = newDays.findIndex(d => d.id === selectedDayId);
+                                newDays[dIdx].matches.push({
+                                    id: Math.random().toString(),
+                                    matchNumber: newDays[dIdx].matches.length + 1,
+                                    results: [],
+                                    screenshots: [],
+                                    isCompleted: false
+                                });
+                                onUpdate({ ...tournament, days: newDays });
+                            }}
+                            className="border-2 border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center text-slate-600 hover:border-cyan-500 hover:text-cyan-500 transition-colors h-[320px]"
+                        >
+                            <Plus className="w-8 h-8 mb-2"/>
+                            <span className="font-tech font-bold">ADD LOBBY</span>
+                        </button>
+                    )}
                 </div>
             )}
 
+            {/* INTEL TAB REMAINING SAME LOGIC BUT USING activeTeams */}
             {tab === 'intel' && (
                 <div className="space-y-6">
                     <div className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
@@ -1508,7 +1662,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                  <FileText className="w-4 h-4 text-green-500"/> CSV
                              </button>
                              <button onClick={() => handleExport('xls')} className="px-3 py-2 bg-slate-900 border border-slate-700 hover:border-green-500 rounded text-xs flex items-center gap-2 text-slate-300 hover:text-white transition-all">
-                                 <FileSpreadsheet className="w-4 h-4 text-green-500"/> EXCEL
+                                 <FileSpreadsheet className="w-4 h-4 text-green-500"/> XLS
                              </button>
                              <button onClick={() => handleExport('pdf')} className="px-3 py-2 bg-slate-900 border border-slate-700 hover:border-green-500 rounded text-xs flex items-center gap-2 text-slate-300 hover:text-white transition-all">
                                  <Printer className="w-4 h-4 text-green-500"/> PDF
@@ -1522,7 +1676,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
 
                     <div className="bg-slate-900/50 border border-slate-800 rounded-lg overflow-hidden">
                         <table className="w-full text-left">
-                            <thead className="bg-slate-950 text-slate-400 text-xs font-mono uppercase">
+                            <thead className="bg-slate-900 text-slate-400 text-xs font-mono uppercase">
                                 <tr>
                                     <th className="p-4">Rank</th>
                                     <th className="p-4">Team</th>
@@ -1561,67 +1715,27 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                             </tbody>
                         </table>
                     </div>
-
-                    {/* NEW SECTION: Sanction Protocol List */}
-                    <div className="mt-8">
-                        <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                            <AlertTriangle className="w-5 h-5 text-red-500"/> 
-                            SANCTION PROTOCOLS & ADJUSTMENTS
-                        </h3>
-                        
-                        {(() => {
-                            const currentDay = tournament.days.find(d => d.dayNumber === selectedDay);
-                            const penalties = currentDay?.penalties || [];
-                            
-                            if (penalties.length === 0) {
-                                return (
-                                    <div className="p-8 bg-slate-900/30 border border-slate-800 rounded-lg text-center text-slate-500 border-dashed">
-                                        NO ACTIVE PROTOCOLS FOR DAY {selectedDay}
-                                    </div>
-                                );
-                            }
-
-                            return (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    {penalties.map(p => {
-                                        const team = tournament.teams.find(t => t.id === p.teamId);
-                                        return (
-                                            <div key={p.id} className="bg-slate-950 border border-red-900/30 p-4 rounded flex justify-between items-start group hover:border-red-500/50 transition-colors">
-                                                <div>
-                                                    <div className="text-white font-bold mb-1">{team?.name || 'Unknown Team'}</div>
-                                                    <div className="text-xs text-slate-400 font-mono mb-2">{p.reason}</div>
-                                                    <span className={`text-xs font-bold px-2 py-1 rounded ${p.points > 0 ? 'bg-green-900/20 text-green-500' : 'bg-red-900/20 text-red-500'}`}>
-                                                        {p.points > 0 ? '+' : ''}{p.points} PTS
-                                                    </span>
-                                                </div>
-                                                <button 
-                                                    onClick={() => handleRemovePenalty(p.id)}
-                                                    className="text-slate-600 hover:text-red-500 p-1"
-                                                    title="Revoke Protocol"
-                                                >
-                                                    <Trash2 className="w-4 h-4"/>
-                                                </button>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            );
-                        })()}
-                    </div>
                 </div>
             )}
 
             {tab === 'manage' && (
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                     <TechCard title="ROSTER OVERWRITE" icon={<Users className="w-5 h-5"/>}>
+                     <TechCard title={tournament.type === 'scrim' ? `ROSTER FOR ${currentDayData?.date || 'TODAY'}` : "GLOBAL ROSTER"} icon={<Users className="w-5 h-5"/>}>
+                         <div className="mb-4 text-xs text-slate-500 flex items-center gap-2">
+                             {tournament.type === 'scrim' 
+                                ? <><Calendar className="w-4 h-4 text-cyan-500"/> Managing slots specifically for: <span className="text-white font-bold">{currentDayData?.date || 'Selected Day'}</span></>
+                                : "Update the global list of teams for the entire tournament."
+                             }
+                         </div>
                          <textarea 
                             value={manageTeamInput}
                             onChange={e => setManageTeamInput(e.target.value)}
-                            placeholder="Paste new team list here to overwrite..."
-                            className="w-full h-40 bg-slate-950 border border-slate-700 rounded p-4 text-xs font-mono text-white mb-4"
+                            placeholder="Paste team list here (e.g. 1. Legionaries)..."
+                            className="w-full h-40 bg-slate-950 border border-slate-700 rounded p-4 text-xs font-mono text-white mb-4 focus:border-cyan-500 outline-none"
                          />
-                         <TechButton onClick={handleUpdateTeams} variant="danger" className="w-full">UPDATE ROSTER</TechButton>
-                         <p className="text-xs text-red-500 mt-2">* Warning: Removing teams will hide their past results.</p>
+                         <TechButton onClick={handleUpdateTeams} variant="danger" className="w-full">
+                             {tournament.type === 'scrim' ? `UPDATE ROSTER FOR ${currentDayData?.date || 'THIS DAY'}` : 'UPDATE GLOBAL ROSTER'}
+                         </TechButton>
                      </TechCard>
 
                      <TechCard title="SCORING OVERWRITE" icon={<Settings className="w-5 h-5"/>}>
@@ -1629,7 +1743,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                             value={manageAiRule}
                             onChange={e => setManageAiRule(e.target.value)}
                             placeholder="e.g. 1st=20, 2nd=15... (AI will re-parse this)"
-                            className="w-full h-40 bg-slate-950 border border-slate-700 rounded p-4 text-xs font-mono text-white mb-4"
+                            className="w-full h-40 bg-slate-950 border border-slate-700 rounded p-4 text-xs font-mono text-white mb-4 focus:border-cyan-500 outline-none"
                          />
                          <TechButton onClick={handleUpdateScoring} variant="danger" className="w-full">UPDATE SCORING</TechButton>
                      </TechCard>
@@ -1640,6 +1754,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
         {showSanctionModal && (
             <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
                 <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-lg overflow-hidden shadow-2xl animate-enter">
+                    {/* Sanction Modal Content - Reusing existing structure */}
                     <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-950">
                         <h3 className="font-tech text-xl text-white flex items-center gap-2">
                             <AlertTriangle className="w-5 h-5 text-yellow-500"/> SANCTION PROTOCOL
@@ -1654,7 +1769,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                 value={sanctionForm.teamId}
                                 onChange={e => setSanctionForm({...sanctionForm, teamId: e.target.value})}
                             >
-                                {tournament.teams.map(t => (
+                                {activeTeams.map(t => (
                                     <option key={t.id} value={t.id}>{t.name}</option>
                                 ))}
                             </select>
@@ -1716,157 +1831,122 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
 };
 
 const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>(() => {
-      try {
-        const saved = localStorage.getItem('bh_current_user');
-        return saved ? JSON.parse(saved) : null;
-      } catch (e) { return null; }
-  });
-  
-  const [currentTournament, setCurrentTournament] = useState<TournamentData | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
   const [tournaments, setTournaments] = useState<TournamentData[]>([]);
-  const [adminMode, setAdminMode] = useState<'panel' | 'app'>('panel');
+  const [activeTournamentId, setActiveTournamentId] = useState<string | null>(null);
+  const [view, setView] = useState<'auth' | 'admin' | 'dashboard' | 'setup'>('auth');
+  const [showLicenseGate, setShowLicenseGate] = useState(false);
 
   useEffect(() => {
-    setTournaments(DB.getTournaments());
+      const storedVersion = localStorage.getItem('bh_data_version');
+      if (storedVersion !== DATA_VERSION) {
+          localStorage.setItem('bh_data_version', DATA_VERSION);
+      }
+      setTournaments(DB.getTournaments());
+      
+      const sessionUser = localStorage.getItem('bh_session_user');
+      if (sessionUser) {
+          try {
+              const u = JSON.parse(sessionUser);
+              if (DB.getUsers().find(dbU => dbU.id === u.id)) {
+                setUser(u);
+                if (u.role === 'admin') setView('admin');
+                else setView('dashboard');
+              }
+          } catch(e) {}
+      }
   }, []);
 
   useEffect(() => {
-      if (user) localStorage.setItem('bh_current_user', JSON.stringify(user));
-      else localStorage.removeItem('bh_current_user');
+    if (user) {
+       localStorage.setItem('bh_session_user', JSON.stringify(user));
+       if (user.role !== 'admin' && (user.licenseExpiry || 0) < Date.now()) {
+           setShowLicenseGate(true);
+       } else {
+           setShowLicenseGate(false);
+       }
+    } else {
+       localStorage.removeItem('bh_session_user');
+    }
   }, [user]);
 
-  const handleLogin = (u: User) => {
-    setUser(u);
-    if (u.role === 'admin') setAdminMode('panel');
-  };
-
   const handleLogout = () => {
-    setUser(null);
-    setCurrentTournament(null);
-    setAdminMode('panel');
+      setUser(null);
+      setView('auth');
+      setActiveTournamentId(null);
   };
 
-  const handleLicenseValidated = (updatedUser: User) => {
-      setUser(updatedUser);
-      // Update in DB
-      const users = DB.getUsers();
-      const idx = users.findIndex(u => u.id === updatedUser.id);
-      if (idx !== -1) {
-          users[idx] = updatedUser;
-          DB.saveUsers(users);
+  const handleDeleteTournament = (id: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (confirm("Delete this event permanently?")) {
+          const updated = tournaments.filter(t => t.id !== id);
+          DB.saveTournaments(updated);
+          setTournaments(updated);
+          if (activeTournamentId === id) setActiveTournamentId(null);
       }
   };
 
-  const handleCreateTournament = (data: TournamentData) => {
-      const newTournaments = [...tournaments, data];
-      DB.saveTournaments(newTournaments);
-      setTournaments(newTournaments);
-      setIsCreating(false);
-      setCurrentTournament(data);
-  };
-  
-  const handleUpdateTournament = (updated: TournamentData) => {
-      const newList = tournaments.map(t => t.id === updated.id ? updated : t);
-      DB.saveTournaments(newList);
-      setTournaments(newList);
-      setCurrentTournament(updated);
-  };
-  
-  const deleteTournament = (id: string) => {
-      if(!confirm("Delete this tournament permanently?")) return;
-      const newList = tournaments.filter(t => t.id !== id);
-      DB.saveTournaments(newList);
-      setTournaments(newList);
-      if(currentTournament?.id === id) setCurrentTournament(null);
-  };
+  if (!user) return <AuthScreen onLogin={u => { setUser(u); setView(u.role === 'admin' ? 'admin' : 'dashboard'); }} />;
+  if (showLicenseGate) return <LicenseGate user={user} onValidated={setUser} onLogout={handleLogout} />;
+  if (view === 'admin') return <AdminPanel onLogout={handleLogout} onEnterApp={() => setView('dashboard')} />;
+  if (view === 'setup') return <SetupScreen user={user} onComplete={t => { 
+      const updated = [...tournaments, t];
+      DB.saveTournaments(updated);
+      setTournaments(updated);
+      setActiveTournamentId(t.id);
+      setView('dashboard');
+  }} onCancel={() => setView('dashboard')} />;
 
-  if (!user) {
-    return <AuthScreen onLogin={handleLogin} />;
+  if (activeTournamentId) {
+      const t = tournaments.find(t => t.id === activeTournamentId);
+      if (t) return <Dashboard tournament={t} onUpdate={updated => {
+          const newTournaments = tournaments.map(curr => curr.id === updated.id ? updated : curr);
+          DB.saveTournaments(newTournaments);
+          setTournaments(newTournaments);
+      }} onBack={() => setActiveTournamentId(null)} />;
   }
 
-  if (user.role === 'admin' && adminMode === 'panel') {
-      return <AdminPanel onLogout={handleLogout} onEnterApp={() => setAdminMode('app')} />;
-  }
-
-  // License Check
-  const isLicenseValid = user.role === 'admin' || (user.licenseExpiry && user.licenseExpiry > Date.now());
-  if (!isLicenseValid) {
-      return <LicenseGate user={user} onValidated={handleLicenseValidated} onLogout={handleLogout} />;
-  }
-
-  if (currentTournament) {
-      return <Dashboard tournament={currentTournament} onUpdate={handleUpdateTournament} onBack={() => setCurrentTournament(null)} />;
-  }
-
-  if (isCreating) {
-      return <SetupScreen user={user} onComplete={handleCreateTournament} onCancel={() => setIsCreating(false)} />;
-  }
-
-  const myTournaments = user.role === 'admin' ? tournaments : tournaments.filter(t => t.ownerId === user.id);
+  const myTournaments = tournaments.filter(t => user.role === 'admin' || t.ownerId === user.id);
 
   return (
-    <div className="min-h-screen bg-[#030712] text-white p-8 font-mono">
-        <header className="flex flex-col md:flex-row justify-between items-center mb-10 gap-4">
+    <div className="min-h-screen bg-[#030712] p-8 text-white">
+        <header className="flex justify-between items-center mb-10 border-b border-slate-800 pb-6">
             <div>
-                <h1 className="font-tech text-3xl font-bold">WELCOME, <span className="text-cyan-500">{user.username}</span></h1>
-                <p className="text-slate-500 text-sm tracking-widest">SELECT OPERATION</p>
+                <h1 className="font-tech text-3xl">BLACK<span className="text-cyan-500">HACKS</span> MANAGER</h1>
+                <p className="text-slate-500 text-sm">Welcome, {user.username}</p>
             </div>
-            <div className="flex gap-4 items-center">
-                 {user.role === 'admin' && (
-                     <button onClick={() => setAdminMode('panel')} className="px-4 py-2 bg-slate-900 border border-slate-700 hover:border-cyan-500 text-xs text-slate-400 hover:text-white rounded transition-all">
-                         ADMIN PANEL
-                     </button>
-                 )}
-                 <div className="px-4 py-2 bg-slate-900 rounded border border-slate-800 text-xs hidden md:block">
-                     <span className="text-slate-500 block">LICENSE EXPIRY</span>
-                     <span className="text-green-500 font-bold">
-                         {user.licenseExpiry && user.licenseExpiry > 2000000000000 ? 'LIFETIME' : user.licenseExpiry ? new Date(user.licenseExpiry).toLocaleDateString() : 'N/A'}
-                     </span>
-                 </div>
-                 <TechButton variant="danger" onClick={handleLogout} className="px-4"><LogOut className="w-4 h-4"/></TechButton>
+            <div className="flex gap-4">
+                {user.role === 'admin' && <button onClick={() => setView('admin')} className="px-3 py-1 bg-slate-800 rounded text-xs">ADMIN</button>}
+                <button onClick={handleLogout} className="flex items-center gap-2 text-slate-500 hover:text-red-500 text-xs font-bold"><LogOut className="w-4 h-4"/> LOGOUT</button>
             </div>
         </header>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <button 
-                onClick={() => setIsCreating(true)}
-                className="group border-2 border-dashed border-slate-800 hover:border-cyan-500 rounded-xl p-8 flex flex-col items-center justify-center text-slate-600 hover:text-cyan-500 transition-all min-h-[200px]"
-            >
-                <div className="w-16 h-16 bg-slate-900 rounded-full flex items-center justify-center mb-4 group-hover:bg-cyan-900/20 transition-colors">
-                    <Plus className="w-8 h-8"/>
-                </div>
-                <span className="font-tech font-bold text-lg">NEW TOURNAMENT</span>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <button onClick={() => setView('setup')} className="h-64 bg-slate-900/30 border-2 border-dashed border-slate-800 rounded-xl flex flex-col items-center justify-center hover:border-cyan-500 hover:text-cyan-500 text-slate-500 transition-all">
+                <Plus className="w-10 h-10 mb-4"/>
+                <span className="font-tech font-bold">CREATE EVENT</span>
             </button>
-
+            
             {myTournaments.map(t => (
-                <TechCard 
-                    key={t.id} 
-                    title={t.name} 
-                    icon={<Trophy className="w-4 h-4"/>}
-                    className="cursor-pointer hover:border-cyan-500/50"
-                    onClick={() => setCurrentTournament(t)}
-                    rightElement={
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); deleteTournament(t.id); }}
-                            className="p-2 hover:bg-red-500/20 hover:text-red-500 rounded transition-colors text-slate-500"
-                            title="Delete Tournament"
-                        >
-                            <Trash2 className="w-4 h-4"/>
-                        </button>
-                    }
+                <TechCard key={t.id} className="h-64 cursor-pointer hover:border-cyan-500" onClick={() => setActiveTournamentId(t.id)}
+                    rightElement={<button onClick={(e) => handleDeleteTournament(t.id, e)} className="text-slate-600 hover:text-red-500"><Trash2 className="w-4 h-4"/></button>}
                 >
-                    <div className="flex justify-between items-center text-sm text-slate-400">
-                        <span>{t.teams.length} Teams</span>
-                        <span className="bg-slate-900 px-2 py-1 rounded">Day {t.currentDay}</span>
-                    </div>
-                    <div className="mt-4 flex items-center gap-2 text-xs text-slate-500">
-                        <Calendar className="w-3 h-3"/> Last active: {formatTimeAgo(Date.now())}
+                    <div className="text-center mt-4">
+                        {t.type === 'scrim' ? <Swords className="w-10 h-10 text-cyan-500 mx-auto mb-4"/> : <Medal className="w-10 h-10 text-amber-500 mx-auto mb-4"/>}
+                        <h3 className="font-bold text-lg line-clamp-2">{t.name}</h3>
+                        <span className="text-xs text-slate-500 uppercase">{t.type}</span>
+                        <div className="mt-4 text-xs text-slate-600">{t.teams.length} Teams | {t.days.length} Days</div>
                     </div>
                 </TechCard>
             ))}
         </div>
+        
+        {myTournaments.length === 0 && (
+            <div className="mt-12 text-center opacity-20 pointer-events-none">
+                <Shield className="w-24 h-24 mx-auto mb-4"/>
+                <p className="font-tech text-xl">NO ACTIVE OPERATIONS</p>
+            </div>
+        )}
     </div>
   );
 };

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BlackHacks CODM Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+      
+      :root {
+        --color-bg: #030712;
+        --color-surface: #0f172a;
+        --color-primary: #8b5cf6;
+        --color-cyan: #06b6d4;
+      }
+
+      body {
+        font-family: 'Outfit', sans-serif;
+        background-color: var(--color-bg);
+        color: #f8fafc;
+        background-image: 
+          linear-gradient(rgba(15, 23, 42, 0.4) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(15, 23, 42, 0.4) 1px, transparent 1px);
+        background-size: 40px 40px;
+      }
+
+      .font-tech {
+        font-family: 'Rajdhani', sans-serif;
+      }
+      
+      .font-mono {
+        font-family: 'JetBrains Mono', monospace;
+      }
+
+      /* Scrollbars */
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+      .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+      /* Tech UI Shapes */
+      .clip-tech-corner {
+        clip-path: polygon(
+          12px 0, 100% 0, 
+          100% calc(100% - 12px), calc(100% - 12px) 100%, 
+          0 100%, 0 12px
+        );
+      }
+      
+      .clip-tech-button {
+        clip-path: polygon(
+          10px 0, 100% 0, 
+          100% calc(100% - 10px), calc(100% - 10px) 100%, 
+          0 100%, 0 10px
+        );
+      }
+
+      /* Animations */
+      @keyframes scanline {
+        0% { transform: translateY(-100%); }
+        100% { transform: translateY(100%); }
+      }
+      .animate-scanline {
+        position: absolute;
+        top: 0; left: 0; right: 0; height: 100%;
+        background: linear-gradient(to bottom, transparent, rgba(6, 182, 212, 0.1), transparent);
+        animation: scanline 3s linear infinite;
+        pointer-events: none;
+      }
+
+      @keyframes fade-in-up {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .animate-enter {
+        animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.1",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.1/",
+    "react/": "https://aistudiocdn.com/react@^19.2.1/",
+    "react-markdown": "https://aistudiocdn.com/react-markdown@^10.1.0",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.557.0",
+    "recharts": "https://aistudiocdn.com/recharts@^3.5.1",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.32.0"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

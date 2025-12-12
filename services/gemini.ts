@@ -27,30 +27,26 @@ export const extractMatchData = async (
 ): Promise<ExtractedMatchData[]> => {
   try {
     const prompt = `
-      Analyze this CODM/PUBG scoreboard image. It contains a list of teams, ranks, and kills.
+      Analyze this Call of Duty Mobile (CODM) or PUBG scoreboard screenshot.
       
-      **CRITICAL INSTRUCTION - FINDING RANK 1**:
-      1. Scan the image for the row containing the number **"2"** in the left rank column.
-      2. Look **IMMEDIATELY ABOVE** that row.
-      3. The row above Rank 2 is **ALWAYS Rank 1**, even if it has a Trophy icon, a Crown, or no number at all.
-      4. **DO NOT SKIP THE FIRST ROW.**
+      **TASK**: Extract a list of teams, their rank, and kill counts.
       
-      **DATA EXTRACTION**:
-      For EVERY visible row, extract:
-      - **rank**: The number on the left. If it's the trophy/medal row at the top, output \`1\`.
-      - **teamName**: The text name of the team (e.g., "TEAM23", "TEAM8"). **Read this exactly.** Do not add spaces if they aren't there (e.g. "TEAM23", not "TEAM 23").
-      - **kills**: The number in the Kills column.
+      **CRITICAL RANKING RULES**:
+      1. **RANK 1**: The first item in the list often has a **TROPHY ICON**, a **CROWN**, or a **MEDAL** instead of a number. This is **ALWAYS Rank 1**.
+      2. **RANK 2**: Look for the number "2". The row visually **ABOVE** this is Rank 1.
+      3. **TEAM NAMES**: Extract the exact text (e.g., "TEAM23"). Do not add spaces if none exist.
       
-      **VERIFICATION**:
-      - If you output a list starting with Rank 2, **YOU ARE WRONG**.
-      - You MUST find the team at Rank 1.
+      **INSTRUCTION**:
+      - Start reading from the very top of the list.
+      - If you see a row with a special icon (trophy/star) at the top, output Rank: 1.
+      - Continue sequentially.
       
       **OUTPUT FORMAT**:
-      Return a pure JSON Array:
+      Return a pure JSON Array. No markdown.
+      Example:
       [
         { "rank": 1, "teamName": "TEAM23", "kills": 23 },
-        { "rank": 2, "teamName": "TEAM8", "kills": 18 },
-        ...
+        { "rank": 2, "teamName": "TEAM8", "kills": 18 }
       ]
     `;
 
@@ -88,10 +84,6 @@ export const extractMatchData = async (
       try {
         const cleanedText = cleanJson(response.text);
         const data = JSON.parse(cleanedText) as ExtractedMatchData[];
-        console.log("AI Extracted Data:", data);
-        
-        // Double check validation: If we missed rank 1 but have rank 2, warn or infer?
-        // For now, raw AI output with the new prompt should be sufficient.
         return data;
       } catch (parseError) {
         console.error("Failed to parse Gemini JSON:", response.text, parseError);
@@ -125,18 +117,6 @@ export const parseScoringRules = async (rulesText: string): Promise<ScoringSyste
          - "pointsPerKill": Integer (default 1 if not specified).
          - "rankPoints": An array of integers. Index 0 is Rank 1.
          - The array MUST have at least 50 entries (fill trailing with 0).
-      
-      EXAMPLE INPUT:
-      "1st place = 50 points, 2nd place = 45 points, continues with 5 points minus till 11th place. 11th-15th = 8 pts. 2 pts per kill."
-      
-      EXPECTED LOGIC FOR EXAMPLE:
-      - Rank 1: 50
-      - Rank 2: 45
-      - Rank 3: 40
-      - ...
-      - Rank 10: 5
-      - Rank 11-15: 8
-      - Points per kill: 2
     `;
 
     const response = await ai.models.generateContent({
@@ -179,36 +159,11 @@ export const generateMatchCommentary = async (
   scoreLoser: number,
   isDraw: boolean
 ): Promise<string> => {
-  try {
-    let prompt = "";
-    if (isDraw) {
-      prompt = `Write a short, intense 1-sentence commentary for a ${gameType} match that ended in a draw (${scoreWinner}-${scoreLoser}) between ${winnerName} and ${loserName}. Make it sound like an esports shoutcaster.`;
-    } else {
-      prompt = `Write a short, intense 1-sentence commentary for a ${gameType} match where ${winnerName} defeated ${loserName} with a score of ${scoreWinner}-${scoreLoser}. Hype up the winner. Make it sound like an esports shoutcaster.`;
-    }
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-    });
-
-    return response.text || "What a match!";
-  } catch (error) {
-    console.error("Gemini error:", error);
-    return "The crowd goes wild!";
-  }
+  return "Match commentary system offline.";
 };
 
 export const suggestTournamentName = async (gameType: string): Promise<string> => {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Generate a cool, short, 3-word name for a ${gameType} tournament. Return ONLY the name.`,
-    });
-    return response.text.replace(/"/g, '') || `${gameType} Championship`;
-  } catch (error) {
-    return "Ultimate League";
-  }
+  return "New Tournament";
 };
 
 export const getTechNews = async (): Promise<NewsItem[]> => {

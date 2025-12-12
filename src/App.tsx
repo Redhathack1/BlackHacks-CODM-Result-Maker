@@ -20,7 +20,9 @@ import { extractMatchData, ExtractedMatchData, parseScoringRules } from './servi
 
 // --- Constants & Defaults ---
 
-const APP_VERSION = "5.8.0 (IndexedDB + Compress)"; 
+const APP_VERSION = "5.7.4 (Manual Edit & Fixes)"; 
+const DATA_VERSION = "v5.7.3_EXPORT"; // Changing this wipes local storage for users
+
 const ADMIN_CREDENTIALS = {
   username: 'admin',
   password: 'admin_password'
@@ -59,78 +61,16 @@ const DEFAULT_SCORING: ScoringSystem = {
   ] 
 };
 
-// --- IndexedDB Helper ---
-const IDB_NAME = 'BlackHacksData';
-const IDB_STORE = 'tournaments';
-
-const idb = {
-  init: (): Promise<IDBDatabase> => {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(IDB_NAME, 1);
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        if (!db.objectStoreNames.contains(IDB_STORE)) {
-          db.createObjectStore(IDB_STORE, { keyPath: 'id' });
-        }
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  },
-  saveAll: async (data: TournamentData[]) => {
-    const db = await idb.init();
-    return new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE, 'readwrite');
-      const store = tx.objectStore(IDB_STORE);
-      // We store the whole array in a wrapper for simplicity in this migration
-      // Or better, we store individual tournaments. Let's store individual.
-      // Clear first to handle deletions/sync
-      store.clear(); 
-      data.forEach(item => store.put(item));
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  },
-  getAll: async (): Promise<TournamentData[]> => {
-    const db = await idb.init();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE, 'readonly');
-      const store = tx.objectStore(IDB_STORE);
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
-    });
-  }
-};
-
-// --- Mock Database (Hybrid: LocalStorage for settings/users, IndexedDB for Heavy Data) ---
+// --- Mock Database ---
 const DB = {
-  getUsers: (): User[] => { try { return JSON.parse(localStorage.getItem('bh_users') || '[]'); } catch { return []; } },
-  saveUsers: (users: User[]) => { try { localStorage.setItem('bh_users', JSON.stringify(users)); } catch(e) { console.warn("Quota exceeded users", e); } },
-  getKeys: (): LicenseKey[] => { try { return JSON.parse(localStorage.getItem('bh_keys') || '[]'); } catch { return []; } },
-  saveKeys: (keys: LicenseKey[]) => { try { localStorage.setItem('bh_keys', JSON.stringify(keys)); } catch(e) { console.warn("Quota exceeded keys", e); } },
-  
-  // ASYNC NOW
-  getTournaments: async (): Promise<TournamentData[]> => {
-    try {
-        const fromIDB = await idb.getAll();
-        return fromIDB;
-    } catch (e) {
-        console.error("Failed to load DB", e);
-        return [];
-    }
-  },
-  saveTournaments: async (data: TournamentData[]) => { 
-      try { 
-          await idb.saveAll(data);
-      } catch(e) { 
-          console.error("Failed to save to IDB", e);
-          alert("Storage Error: Your device storage is full or restricted.");
-      } 
-  },
-  
-  getScoringPresets: (): ScoringPreset[] => { try { return JSON.parse(localStorage.getItem('bh_scoring_presets') || '[]'); } catch { return []; } },
-  saveScoringPresets: (data: ScoringPreset[]) => { try { localStorage.setItem('bh_scoring_presets', JSON.stringify(data)); } catch(e) { console.warn("Quota exceeded presets", e); } },
+  getUsers: (): User[] => JSON.parse(localStorage.getItem('bh_users') || '[]'),
+  saveUsers: (users: User[]) => localStorage.setItem('bh_users', JSON.stringify(users)),
+  getKeys: (): LicenseKey[] => JSON.parse(localStorage.getItem('bh_keys') || '[]'),
+  saveKeys: (keys: LicenseKey[]) => localStorage.setItem('bh_keys', JSON.stringify(keys)),
+  getTournaments: (): TournamentData[] => JSON.parse(localStorage.getItem('bh_tournaments') || '[]'),
+  saveTournaments: (data: TournamentData[]) => localStorage.setItem('bh_tournaments', JSON.stringify(data)),
+  getScoringPresets: (): ScoringPreset[] => JSON.parse(localStorage.getItem('bh_scoring_presets') || '[]'),
+  saveScoringPresets: (data: ScoringPreset[]) => localStorage.setItem('bh_scoring_presets', JSON.stringify(data)),
 };
 
 // --- Helpers ---
@@ -189,7 +129,9 @@ const downloadCSV = (filename: string, headers: string[], rows: (string | number
 
 const cleanTeamName = (raw: string) => {
     let name = raw.trim();
+    // Aggressively strip leading numbering (e.g., "1.", "1 ", "#1", "1-", "1)")
     name = name.replace(/^[\#]?\d+[\.\)\:\-\s]+\s*/, '');
+    // Clean invisible characters like U+2060 (Word Joiner) often found in copy-pastes
     name = name.replace(/[\u200B-\u200D\uFEFF\u2060]/g, '');
     return name.trim();
 };
@@ -205,44 +147,12 @@ const formatTimeAgo = (timestamp?: number) => {
     return `${Math.floor(hours / 24)}d ago`;
 };
 
-// COMPRESSION HELPER: Resizes large images to prevent storage bloat
-const compressImage = (file: File): Promise<string> => {
+const readFileAsBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = (event) => {
-            const img = new Image();
-            img.src = event.target?.result as string;
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                let width = img.width;
-                let height = img.height;
-                const MAX_WIDTH = 1000;
-                const MAX_HEIGHT = 2000;
-
-                // Resize logic
-                if (width > height) {
-                    if (width > MAX_WIDTH) {
-                        height *= MAX_WIDTH / width;
-                        width = MAX_WIDTH;
-                    }
-                } else {
-                    if (height > MAX_HEIGHT) {
-                        width *= MAX_HEIGHT / height;
-                        height = MAX_HEIGHT;
-                    }
-                }
-
-                canvas.width = width;
-                canvas.height = height;
-                const ctx = canvas.getContext('2d');
-                ctx?.drawImage(img, 0, 0, width, height);
-                // Convert to JPEG with 0.6 quality (High compression, good for text)
-                resolve(canvas.toDataURL('image/jpeg', 0.6));
-            };
-            img.onerror = (err) => reject(err);
-        };
+        reader.onload = () => resolve(reader.result as string);
         reader.onerror = reject;
+        reader.readAsDataURL(file);
     });
 };
 
@@ -276,6 +186,7 @@ const TechCard: React.FC<{ children: React.ReactNode; className?: string; title?
   children, className = '', title, icon, rightElement, onClick 
 }) => (
   <div onClick={onClick} className={`relative bg-[#0a0f1e]/80 backdrop-blur-xl border border-slate-800/60 shadow-xl ${className} clip-tech-corner group transition-all duration-300 hover:border-slate-700/80`}>
+    {/* Glowing Corners */}
     <div className="absolute -top-[1px] -left-[1px] w-4 h-4 border-t-2 border-l-2 border-cyan-500/30 group-hover:border-cyan-500 transition-colors"></div>
     <div className="absolute -top-[1px] -right-[1px] w-4 h-4 border-t-2 border-r-2 border-cyan-500/30 group-hover:border-cyan-500 transition-colors"></div>
     <div className="absolute -bottom-[1px] -left-[1px] w-4 h-4 border-b-2 border-l-2 border-cyan-500/30 group-hover:border-cyan-500 transition-colors"></div>
@@ -294,6 +205,7 @@ const TechCard: React.FC<{ children: React.ReactNode; className?: string; title?
   </div>
 );
 
+// ... (AuthScreen, LicenseGate, AdminPanel, SetupScreen remain unchanged) ...
 // --- Sub-Screens ---
 
 const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) => {
@@ -336,14 +248,17 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
 
         let duration: LicenseDuration = '7d';
         
+        // 1. Check if Key exists in DB
         let existingKey = keys.find(k => k.code === cleanKeyInput);
         let isAlgorithmic = false;
 
         if (existingKey) {
             if (existingKey.isRevoked) return setError("License Key Revoked");
+            // STRICT ONE-USER CHECK: If key is used, block it immediately if it's someone else
             if (existingKey.isUsed && existingKey.usedByUsername !== uniqueId) return setError(`This license is permanently assigned to another device/user (${existingKey.usedByUsername}). Access Denied.`);
             duration = existingKey.durationLabel;
         } else {
+            // 2. Not in DB, check if it's a valid generated Smart Key
             const smartCheck = verifySmartKey(cleanKeyInput);
             if (smartCheck.valid && smartCheck.duration) {
                 isAlgorithmic = true;
@@ -368,6 +283,7 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
         };
 
         if (isAlgorithmic) {
+            // New smart key being claimed for the first time
             const newKeyRecord: LicenseKey = {
                 code: cleanKeyInput,
                 durationLabel: duration,
@@ -381,6 +297,7 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
             keys.push(newKeyRecord);
             DB.saveKeys(keys);
         } else if (existingKey) {
+            // Existing DB key being claimed
             existingKey.isUsed = true;
             existingKey.usedByUserId = newUser.id;
             existingKey.usedByUsername = newUser.username;
@@ -392,12 +309,15 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
         onLogin(newUser);
 
     } else {
+        // LOGIN MODE
         let user = users.find(u => u.username === uniqueId);
         
+        // If user not found, try to recover from Algorithmic Key on a new device
         if (!user) {
              const smartCheck = verifySmartKey(cleanKeyInput);
              const existingKey = keys.find(k => k.code === cleanKeyInput);
              
+             // STRICT: If key exists in DB and is used by someone else, DO NOT allow recovery
              if (existingKey && existingKey.isUsed && existingKey.usedByUsername !== uniqueId) {
                   return setError("License key is already assigned to a device. Please use the original device.");
              }
@@ -418,6 +338,7 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
                   DB.saveUsers(users);
                   user = newUser;
                   
+                  // If key didn't exist in DB (fresh algorithmic), save it now
                   if (!existingKey) {
                       keys.push({
                         code: cleanKeyInput,
@@ -443,10 +364,12 @@ const AuthScreen: React.FC<{ onLogin: (user: User) => void }> = ({ onLogin }) =>
              DB.saveUsers(users);
              onLogin(user);
         } else {
+            // Trying to Login with a NEW/RENEWAL Key?
             let potentialNewKey = keys.find(k => k.code === cleanKeyInput);
             let isSmart = false;
             let duration: LicenseDuration = '7d';
 
+            // STRICT: If key exists and is used by another, BLOCK
             if (potentialNewKey && potentialNewKey.isUsed && potentialNewKey.usedByUsername !== user.username) {
                 return setError(`License Key is already assigned to a device (${potentialNewKey.usedByUsername}). Please use the original device.`);
             }
@@ -701,7 +624,7 @@ const AdminPanel: React.FC<{ onLogout: () => void; onEnterApp: () => void }> = (
         setKeys(DB.getKeys());
     };
     refresh();
-    const interval = setInterval(refresh, 5000); 
+    const interval = setInterval(refresh, 5000); // Live update
     return () => clearInterval(interval);
   }, []);
 
@@ -723,6 +646,7 @@ const AdminPanel: React.FC<{ onLogout: () => void; onEnterApp: () => void }> = (
 
   const resetUserKey = (user: User) => {
       if(!confirm(`Reset key for ${user.username}? They will need a new key.`)) return;
+      // Revoke current key if exists
       const updatedKeys = [...keys];
       const keyIdx = updatedKeys.findIndex(k => k.code === user.licenseKey);
       if(keyIdx >= 0) updatedKeys[keyIdx].isRevoked = true;
@@ -915,7 +839,7 @@ const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCanc
             let dayCount = 1;
             while (start <= end) {
                 days.push({
-                    id: Math.random().toString(36).substr(2, 9),
+                    id: Math.random().toString(),
                     dayNumber: dayCount,
                     date: start.toISOString().split('T')[0],
                     matches: [],
@@ -927,7 +851,7 @@ const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCanc
         } else {
             // Fallback: 3 days default
             days = Array.from({ length: 3 }, (_, i) => ({
-                id: Math.random().toString(36).substr(2, 9),
+                id: Math.random().toString(),
                 dayNumber: i + 1,
                 matches: [],
                 penalties: []
@@ -1036,6 +960,7 @@ const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCanc
 
                 {step === 3 && (
                     <div className="space-y-8">
+                        {/* AI Builder */}
                         <div className="bg-cyan-900/10 border border-cyan-500/30 p-6 rounded-lg">
                             <h3 className="text-cyan-400 font-bold mb-2 flex items-center gap-2"><Sparkles className="w-4 h-4"/> AI SCORING BUILDER</h3>
                             <div className="flex gap-2 mb-2">
@@ -1113,6 +1038,7 @@ const SetupScreen: React.FC<{ onComplete: (data: TournamentData) => void, onCanc
 // 5. Dashboard
 const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: TournamentData) => void, onBack: () => void }> = ({ tournament, onUpdate, onBack }) => {
   const [tab, setTab] = useState<'overview' | 'matches' | 'intel' | 'manage'>('overview');
+  // For Scrims, currentDay maps to selected date string if we want, or we just rely on ID
   const [selectedDayId, setSelectedDayId] = useState<string>(tournament.days[0]?.id || '');
   const [showSanctionModal, setShowSanctionModal] = useState(false);
   const [sanctionForm, setSanctionForm] = useState({
@@ -1123,11 +1049,17 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
   });
   const [analyzingMatchId, setAnalyzingMatchId] = useState<string | null>(null);
   const [newScrimDate, setNewScrimDate] = useState('');
+  
+  // Edit Match State
   const [editingMatch, setEditingMatch] = useState<Match | null>(null);
+
+  // Manage Tab States
   const [manageTeamInput, setManageTeamInput] = useState('');
   const [manageAiRule, setManageAiRule] = useState('');
   
   const currentDayData = useMemo(() => tournament.days.find(d => d.id === selectedDayId), [tournament, selectedDayId]);
+  
+  // Use daily team roster if available, otherwise global
   const activeTeams = currentDayData?.teams || tournament.teams;
 
   // Intelligence Logic
@@ -1149,6 +1081,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
             }
         });
 
+        // Penalties
         currentDayData.penalties.filter(p => p.teamId === team.id).forEach(p => {
              penaltyPts += p.points;
         });
@@ -1166,26 +1099,27 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
     return scores.sort((a, b) => b.total - a.total);
   }, [tournament, selectedDayId, activeTeams]);
 
-  const handleAddScrimDay = async () => {
+  const handleAddScrimDay = () => {
       if(!newScrimDate) return alert("Please select a date");
       const exists = tournament.days.find(d => d.date === newScrimDate);
       if(exists) return alert("Date already exists!");
 
       const newDays = [...tournament.days];
       newDays.push({
-          id: Math.random().toString(36).substr(2, 9),
+          id: Math.random().toString(),
           dayNumber: newDays.length + 1,
           date: newScrimDate,
           matches: [],
           penalties: [],
-          teams: tournament.teams.length > 0 ? tournament.teams : undefined 
+          teams: tournament.teams.length > 0 ? tournament.teams : undefined // Default to global template if exists
       });
+      // Sort days by date
       newDays.sort((a,b) => (a.date || '').localeCompare(b.date || ''));
-      await onUpdate({...tournament, days: newDays});
+      onUpdate({...tournament, days: newDays});
       setNewScrimDate('');
   };
 
-  const handleUpdateTeams = async () => {
+  const handleUpdateTeams = () => {
       const raw = manageTeamInput.split('\n').map(t => cleanTeamName(t)).filter(t => t.length > 0);
       const newTeams: Team[] = raw.map(name => {
           const existing = activeTeams.find(t => t.name === name);
@@ -1193,13 +1127,15 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
       });
 
       if (tournament.type === 'scrim' && currentDayData) {
+          // Update ONLY this day's roster
           const newDays = tournament.days.map(d => 
               d.id === currentDayData.id ? { ...d, teams: newTeams } : d
           );
-          await onUpdate({ ...tournament, days: newDays });
+          onUpdate({ ...tournament, days: newDays });
           alert(`Roster updated for ${currentDayData.date}`);
       } else {
-          await onUpdate({ ...tournament, teams: newTeams });
+          // Update Global
+          onUpdate({ ...tournament, teams: newTeams });
           alert("Global Roster Updated!");
       }
   };
@@ -1207,35 +1143,35 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
   const handleUpdateScoring = async () => {
       const parsed = await parseScoringRules(manageAiRule);
       if(parsed) {
-          await onUpdate({ ...tournament, scoring: parsed });
+          onUpdate({ ...tournament, scoring: parsed });
           alert("Scoring Updated!");
       }
   };
 
-  const handleAddPenalty = async (teamId: string, points: number, reason: string) => {
+  const handleAddPenalty = (teamId: string, points: number, reason: string) => {
      const newDays = [...tournament.days];
      const dayIdx = newDays.findIndex(d => d.id === selectedDayId);
      if(dayIdx >= 0) {
          newDays[dayIdx].penalties.push({
-             id: Math.random().toString(36).substr(2, 9),
+             id: Math.random().toString(),
              teamId,
              points,
              reason
          });
-         await onUpdate({...tournament, days: newDays});
+         onUpdate({...tournament, days: newDays});
      }
   };
   
-  const handleRemovePenalty = async (penaltyId: string) => {
+  const handleRemovePenalty = (penaltyId: string) => {
      const newDays = [...tournament.days];
      const dayIdx = newDays.findIndex(d => d.id === selectedDayId);
      if(dayIdx >= 0) {
          newDays[dayIdx].penalties = newDays[dayIdx].penalties.filter(p => p.id !== penaltyId);
-         await onUpdate({...tournament, days: newDays});
+         onUpdate({...tournament, days: newDays});
      }
   };
 
-  const handleResetMatch = async (matchId: string) => {
+  const handleResetMatch = (matchId: string) => {
     if(!confirm("Reset this lobby? All data will be lost.")) return;
     const newDays = [...tournament.days];
     const dayIdx = newDays.findIndex(d => d.id === selectedDayId);
@@ -1244,12 +1180,12 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
         if(mIdx >= 0) {
             newDays[dayIdx].matches[mIdx].results = [];
             newDays[dayIdx].matches[mIdx].isCompleted = false;
-            await onUpdate({...tournament, days: newDays});
+            onUpdate({...tournament, days: newDays});
         }
     }
   };
 
-  const handleSaveMatchEdit = async () => {
+  const handleSaveMatchEdit = () => {
       if (!editingMatch) return;
       const newDays = [...tournament.days];
       const dIdx = newDays.findIndex(d => d.id === selectedDayId);
@@ -1258,7 +1194,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
           if(mIdx >= 0) {
               newDays[dIdx].matches[mIdx] = editingMatch;
               newDays[dIdx].matches[mIdx].isCompleted = true; // Ensure completed if manual edit
-              await onUpdate({...tournament, days: newDays});
+              onUpdate({...tournament, days: newDays});
               setEditingMatch(null);
           }
       }
@@ -1348,7 +1284,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
 
           newDays[dIdx].matches[mIdx].results = Array.from(resultsMap.values());
           newDays[dIdx].matches[mIdx].isCompleted = true;
-          await onUpdate({ ...tournament, days: newDays });
+          onUpdate({ ...tournament, days: newDays });
       } catch (err) {
           console.error("Analysis failed", err);
           alert("Analysis Failed. Please try again.");
@@ -1634,7 +1570,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                                     <div key={idx} className="relative group">
                                                         <img src={src} className="w-full h-16 object-cover rounded border border-slate-700"/>
                                                         <button 
-                                                            onClick={async (e) => {
+                                                            onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 const newDays = [...tournament.days];
                                                                 const dIdx = newDays.findIndex(d => d.id === selectedDayId);
@@ -1644,7 +1580,7 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                                                 
                                                                 const current = newDays[dIdx].matches[mIdx].screenshots;
                                                                 newDays[dIdx].matches[mIdx].screenshots = current.filter((_, i) => i !== idx);
-                                                                await onUpdate({ ...tournament, days: newDays });
+                                                                onUpdate({ ...tournament, days: newDays });
                                                             }}
                                                             className="absolute top-1 right-1 bg-red-500/90 hover:bg-red-600 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-all shadow-md transform hover:scale-110"
                                                             title="Delete Screenshot"
@@ -1675,34 +1611,15 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                                             onChange={async (e) => {
                                                 const files = Array.from(e.target.files || []);
                                                 if (files.length > 0) {
-                                                    try {
-                                                        const base64s = await Promise.all(files.map(compressImage));
-                                                        
-                                                        // STRICT IMMUTABLE UPDATE
-                                                        const newDays = tournament.days.map(d => {
-                                                            if (d.id === selectedDayId) {
-                                                                return {
-                                                                    ...d,
-                                                                    matches: d.matches.map(m => {
-                                                                        if (m.id === match.id) {
-                                                                            return {
-                                                                                ...m,
-                                                                                screenshots: [...(m.screenshots || []), ...base64s]
-                                                                            };
-                                                                        }
-                                                                        return m;
-                                                                    })
-                                                                };
-                                                            }
-                                                            return d;
-                                                        });
-                                                        
-                                                        await onUpdate({ ...tournament, days: newDays });
-                                                    } catch (err) {
-                                                        console.error("Upload Error:", err);
-                                                    }
+                                                    const base64s = await Promise.all(files.map(readFileAsBase64));
+                                                    const newDays = [...tournament.days];
+                                                    const dIdx = newDays.findIndex(d => d.id === selectedDayId);
+                                                    const mIdx = newDays[dIdx].matches.findIndex(m => m.id === match.id);
+                                                    const currentScreenshots = newDays[dIdx].matches[mIdx].screenshots || [];
+                                                    newDays[dIdx].matches[mIdx].screenshots = [...currentScreenshots, ...base64s];
+                                                    onUpdate({ ...tournament, days: newDays });
                                                 }
-                                                e.target.value = ''; // Reset input to allow re-upload
+                                                e.target.value = '';
                                             }}
                                         />
                                         
@@ -1742,17 +1659,17 @@ const Dashboard: React.FC<{ tournament: TournamentData, onUpdate: (t: Tournament
                     
                     {activeTeams.length > 0 && (
                         <button 
-                            onClick={async () => {
+                            onClick={() => {
                                 const newDays = [...tournament.days];
                                 const dIdx = newDays.findIndex(d => d.id === selectedDayId);
                                 newDays[dIdx].matches.push({
-                                    id: Math.random().toString(36).substr(2, 9),
+                                    id: Math.random().toString(),
                                     matchNumber: newDays[dIdx].matches.length + 1,
                                     results: [],
                                     screenshots: [],
                                     isCompleted: false
                                 });
-                                await onUpdate({ ...tournament, days: newDays });
+                                onUpdate({ ...tournament, days: newDays });
                             }}
                             className="border-2 border-dashed border-slate-800 rounded-lg flex flex-col items-center justify-center text-slate-600 hover:border-cyan-500 hover:text-cyan-500 transition-colors h-[320px]"
                         >
@@ -2048,15 +1965,11 @@ const App: React.FC = () => {
   const [tournaments, setTournaments] = useState<TournamentData[]>([]);
   const [selectedTournament, setSelectedTournament] = useState<TournamentData | null>(null);
   const [isCreating, setIsCreating] = useState(false);
-  const [view, setView] = useState<'auth' | 'admin' | 'dashboard' | 'setup'>('auth');
+  const [view, setView] = useState<'home' | 'admin'>('home');
 
   useEffect(() => {
-    // Initial load: ASYNC NOW
-    const load = async () => {
-        const data = await DB.getTournaments();
-        setTournaments(data);
-    };
-    load();
+    // Initial load
+    setTournaments(DB.getTournaments());
     
     // Check for existing session (optional, but good for UX)
     // For now, let's stick to AuthScreen on refresh or simple state persistence if needed.
@@ -2080,17 +1993,17 @@ const App: React.FC = () => {
     setView('home');
   };
 
-  const handleCreateTournament = async (data: TournamentData) => {
+  const handleCreateTournament = (data: TournamentData) => {
       const newTournaments = [...tournaments, data];
-      await DB.saveTournaments(newTournaments);
+      DB.saveTournaments(newTournaments);
       setTournaments(newTournaments);
       setIsCreating(false);
       setSelectedTournament(data);
   };
 
-  const handleUpdateTournament = async (updated: TournamentData) => {
+  const handleUpdateTournament = (updated: TournamentData) => {
       const newTournaments = tournaments.map(t => t.id === updated.id ? updated : t);
-      await DB.saveTournaments(newTournaments);
+      DB.saveTournaments(newTournaments);
       setTournaments(newTournaments);
       setSelectedTournament(updated);
   };
